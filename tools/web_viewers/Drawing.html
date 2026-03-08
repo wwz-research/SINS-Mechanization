@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>惯性导航数据分析</title>
+    
+    <!-- 依赖库 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
+    
+    <!-- Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- 关键修改：尝试加载本地数据脚本 -->
+    <script src="data_loader.js" onerror="window.isLocalDataLoaderMissing=true"></script>
+
+    <style>
+        /* 基础样式：使用您喜欢的深色背景 */
+        body { margin: 0; overflow: hidden; background-color: #0f172a; color: #e2e8f0; font-family: 'Inter', system-ui, sans-serif; }
+        
+        /* 玻璃拟态面板 */
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        
+        /* 滚动条美化 */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        /* 标签页动画 */
+        .tab-btn {
+            position: relative;
+            overflow: hidden;
+        }
+        .tab-btn::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: #3b82f6;
+            transform: scaleX(0);
+            transition: transform 0.3s ease;
+        }
+        .tab-btn.active {
+            color: #60a5fa;
+            background: rgba(59, 130, 246, 0.1);
+        }
+        .tab-btn.active::after {
+            transform: scaleX(1);
+        }
+        
+        canvas {
+            width: 100% !important;
+            height: 100% !important;
+        }
+        
+        /* 进度条 */
+        input[type=range] {
+            -webkit-appearance: none;
+            background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 14px;
+            width: 14px;
+            border-radius: 50%;
+            background: #3b82f6;
+            cursor: pointer;
+            margin-top: -5px;
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            background: #334155;
+            border-radius: 2px;
+        }
+        
+        .hidden-force { display: none !important; }
+        
+        /* 统计卡片 */
+        .stat-card {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 0.75rem;
+            background: #1e293b;
+            border-left: 3px solid #3b82f6;
+            border-radius: 0.375rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s;
+        }
+        .stat-card:hover { transform: translateY(-2px); }
+        .stat-label {
+            font-size: 0.65rem;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.25rem;
+        }
+        .stat-value {
+            font-family: 'ui-monospace', 'SFMono-Regular', 'Menlo', monospace;
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #f1f5f9;
+            line-height: 1.2;
+        }
+        .stat-unit {
+            font-size: 0.65rem;
+            color: #64748b;
+            align-self: flex-end;
+            margin-top: -0.5rem;
+        }
+
+        /* Leaflet Dark Mode */
+        .leaflet-tile-pane { filter: invert(100%) hue-rotate(180deg) brightness(90%) contrast(85%); }
+        .leaflet-container { background: #0f172a !important; }
+        
+        .car-icon-container { transition: transform 0.1s linear; }
+        
+        /* 图表容器 */
+        .chart-box {
+            background: rgba(30, 41, 59, 0.4);
+            border: 1px solid rgba(148, 163, 184, 0.1);
+            transition: border-color 0.2s;
+        }
+        .chart-box:hover {
+            border-color: rgba(59, 130, 246, 0.3);
+        }
+        .chart-title-badge {
+            font-family: 'ui-monospace', monospace;
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+    </style>
+</head>
+<body class="flex flex-col h-screen text-sm bg-slate-900 selection:bg-blue-500 selection:text-white">
+
+    <!-- 顶部导航栏 -->
+    <header class="flex items-center justify-between px-6 bg-slate-900 border-b border-slate-800 h-14 shrink-0 z-20 shadow-lg">
+        <div class="flex items-center space-x-3">
+            <div class="text-blue-500 text-xl font-bold">INS Plotter</div>
+            <h1 class="text-gray-400 text-xs hidden md:block">多维数据融合分析</h1>
+        </div>
+        
+        <div class="flex items-center space-x-3">
+             <!-- 截图 -->
+             <button onclick="captureScreenshot()" class="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 rounded text-xs text-white font-bold flex items-center gap-2 transition shadow-sm border border-teal-700">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                截图 (Save)
+            </button>
+
+             <!-- 模式切换 -->
+             <button id="btn-mode-toggle" onclick="toggleErrorMode()" class="px-3 py-1.5 bg-red-600 hover:bg-red-500 rounded text-xs text-white font-bold flex items-center gap-2 transition disabled:opacity-50 disabled:cursor-not-allowed group mr-4" disabled>
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                <span id="mode-text">查看误差 (Diff)</span>
+            </button>
+
+            <!-- 数据加载 -->
+            <button onclick="generateDemoData()" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded text-xs transition text-white">
+                模拟数据
+            </button>
+            
+            <div class="relative">
+                <input type="file" id="fileInputINS" accept=".txt,.csv" class="hidden" onchange="handleFileUpload(this, 'INS')">
+                <label for="fileInputINS" class="cursor-pointer px-3 py-1.5 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded text-xs flex items-center gap-2 transition text-gray-200">
+                    <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                    解算 (INS)
+                </label>
+            </div>
+
+            <div class="relative">
+                <input type="file" id="fileInputTruth" accept=".txt,.csv" class="hidden" onchange="handleFileUpload(this, 'TRUTH')">
+                <label for="fileInputTruth" class="cursor-pointer px-3 py-1.5 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded text-xs flex items-center gap-2 transition text-gray-200">
+                    <svg class="w-4 h-4 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    真值 (Ref)
+                </label>
+            </div>
+        </div>
+    </header>
+
+    <!-- 标签页 -->
+    <div class="flex bg-slate-800/50 border-b border-slate-700 h-10 shrink-0 backdrop-blur-sm">
+        <button onclick="switchTab('intro')" id="tab-intro" class="tab-btn active flex-1 text-center font-medium hover:bg-slate-700 transition duration-200 focus:outline-none text-slate-300">
+            说明 (Intro)
+        </button>
+        <button onclick="switchTab('pos')" id="tab-pos" class="tab-btn flex-1 text-center font-medium hover:bg-slate-700 transition duration-200 focus:outline-none text-slate-300">
+            位置 (Position)
+        </button>
+        <button onclick="switchTab('vel')" id="tab-vel" class="tab-btn flex-1 text-center font-medium hover:bg-slate-700 transition duration-200 focus:outline-none text-slate-300">
+            速度 (Velocity)
+        </button>
+        <button onclick="switchTab('att')" id="tab-att" class="tab-btn flex-1 text-center font-medium hover:bg-slate-700 transition duration-200 focus:outline-none text-slate-300">
+            姿态 (Attitude)
+        </button>
+        <button onclick="switchTab('traj')" id="tab-traj" class="tab-btn flex-1 text-center font-medium hover:bg-slate-700 transition duration-200 focus:outline-none text-slate-300">
+            轨迹 (Trajectory)
+        </button>
+    </div>
+
+    <!-- 主体区域 -->
+    <div class="flex-1 relative overflow-hidden bg-slate-950">
+
+        <!-- 页面: 说明 (Intro) -->
+        <div id="page-intro" class="page-content absolute top-0 left-0 right-0 bottom-16 p-8 overflow-y-auto flex items-center justify-center bg-gradient-to-b from-slate-900 to-black">
+            <div class="max-w-5xl w-full mx-auto flex flex-col gap-10 text-center relative z-10">
+                
+                <div class="space-y-4">
+                    <h1 class="text-5xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-teal-400 to-emerald-400">
+                        INS Result Visualizer
+                    </h1>
+                    
+                    <!-- 修改后的个人信息区域 -->
+                    <div class="text-slate-400 text-lg max-w-2xl mx-auto flex flex-col items-center gap-3">
+                        <!-- 课程与实验名称 -->
+                        <p class="tracking-wide">
+                            <span class="font-bold text-slate-200">《惯性导航原理》</span>
+                            <span class="mx-2 text-slate-600">|</span>
+                            实验三 · 结果分析
+                        </p>
+                        
+                        <!-- 学号姓名徽章 -->
+                        <div class="px-4 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 font-mono text-base shadow-[0_0_10px_rgba(59,130,246,0.1)]">
+                            2023302141129 &nbsp; 王薇帧
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- 自动加载状态栏 (新增功能：带进度条提示) -->
+                <div id="auto-load-status" class="w-full max-w-2xl mx-auto bg-slate-900/80 p-4 rounded-xl border border-slate-700 hidden shadow-xl backdrop-blur-md">
+                    <div class="flex justify-between items-center mb-2">
+                        <span id="load-msg" class="text-sm text-slate-300 flex items-center gap-2 font-medium">
+                            <svg class="animate-spin h-4 w-4 text-blue-500" id="load-spinner" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                            正在初始化...
+                        </span>
+                        <span id="load-percent" class="text-xs text-blue-400 font-mono bg-blue-500/10 px-2 py-1 rounded">0%</span>
+                    </div>
+                    <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                        <div id="load-progress" class="bg-blue-500 h-1.5 rounded-full transition-all duration-300 style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-left">
+                    <div class="bg-slate-900/50 p-6 rounded-xl border border-slate-700 hover:border-blue-500/50 transition duration-300 group">
+                        <div class="flex items-center gap-3 mb-3">
+                            <div class="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-400 font-bold group-hover:bg-blue-600 group-hover:text-white transition">1</div>
+                            <h3 class="text-white font-bold text-lg">上传数据</h3>
+                        </div>
+                        <p class="text-gray-400 text-sm leading-relaxed">
+                            自动加载本地数据。也可点击顶部 <span class="text-blue-400">解算(INS)</span> 和 <span class="text-orange-400">真值(Ref)</span> 按钮上传数据文件。
+                            <br><br>
+                            <span class="text-xs text-gray-500">新手？点击“模拟数据”立即体验。</span>
+                        </p>
+                    </div>
+
+                    <div class="bg-slate-900/50 p-6 rounded-xl border border-slate-700 hover:border-emerald-500/50 transition duration-300 group">
+                        <div class="flex items-center gap-3 mb-3">
+                            <div class="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400 font-bold group-hover:bg-emerald-600 group-hover:text-white transition">2</div>
+                            <h3 class="text-white font-bold text-lg">交互分析</h3>
+                        </div>
+                        <p class="text-gray-400 text-sm leading-relaxed">
+                            通过多维图表查看位置、速度与姿态。在地图模式下对比真实轨迹。
+                            <br><br>
+                            <span class="text-xs text-gray-500">点击“查看误差”实时计算 RMSE。</span>
+                        </p>
+                    </div>
+
+                    <div class="bg-slate-900/50 p-6 rounded-xl border border-slate-700 hover:border-purple-500/50 transition duration-300 group">
+                        <div class="flex items-center gap-3 mb-3">
+                            <div class="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center text-purple-400 font-bold group-hover:bg-purple-600 group-hover:text-white transition">3</div>
+                            <h3 class="text-white font-bold text-lg">导出图片</h3>
+                        </div>
+                        <p class="text-gray-400 text-sm leading-relaxed">
+                            点击 <span class="text-teal-400">截图 (Save)</span> 按钮，一键保存当前视图的高清分析图。
+                            <br><br>
+                            <span class="text-xs text-gray-500">文件名自动包含时间戳，方便归档。</span>
+                        </p>
+                    </div>
+                </div>
+                
+                <div class="bg-slate-900/30 p-5 rounded-lg border border-dashed border-slate-700 w-full max-w-4xl mx-auto">
+                    <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-2">
+                        <div class="flex items-center gap-2 text-gray-300">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <span class="text-sm font-semibold">数据格式规范 (Data Format)</span>
+                        </div>
+                        <span class="text-xs text-gray-500">支持空格/逗号/制表符分隔 · 自动跳过表头</span>
+                    </div>
+                    
+                    <div class="bg-black/40 p-3 rounded border border-gray-800 overflow-x-auto text-left">
+                        <code class="text-xs font-mono text-emerald-400 whitespace-nowrap">
+                            Time(s)  Lat(deg)  Lon(deg)  Height(m)  Vn(m/s)  Ve(m/s)  Vu(m/s)  Roll(deg)  Pitch(deg)  Yaw(deg)
+                        </code>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+        
+        <!-- 页面: 位置 (优化版) -->
+        <div id="page-pos" class="page-content absolute top-0 left-0 right-0 bottom-16 flex p-3 gap-3 hidden bg-slate-950">
+            <!-- 图表区 -->
+            <div class="flex-1 flex flex-col gap-3 min-w-0">
+                <div class="flex-1 chart-box rounded-lg relative flex flex-col p-1">
+                    <div class="absolute top-2 left-2 z-10 chart-title-badge px-2 py-0.5 rounded text-xs text-blue-400 font-bold title-lat">Latitude</div>
+                    <div class="flex-1 relative min-h-0 chart-container-raw"><canvas id="chart-lat"></canvas></div>
+                    <div class="flex-1 relative min-h-0 chart-container-err hidden-force"><canvas id="chart-err-lat"></canvas></div>
+                </div>
+                <div class="flex-1 chart-box rounded-lg relative flex flex-col p-1">
+                    <div class="absolute top-2 left-2 z-10 chart-title-badge px-2 py-0.5 rounded text-xs text-blue-400 font-bold title-lon">Longitude</div>
+                    <div class="flex-1 relative min-h-0 chart-container-raw"><canvas id="chart-lon"></canvas></div>
+                    <div class="flex-1 relative min-h-0 chart-container-err hidden-force"><canvas id="chart-err-lon"></canvas></div>
+                </div>
+                <div class="flex-1 chart-box rounded-lg relative flex flex-col p-1">
+                    <div class="absolute top-2 left-2 z-10 chart-title-badge px-2 py-0.5 rounded text-xs text-blue-400 font-bold title-alt">Height</div>
+                    <div class="flex-1 relative min-h-0 chart-container-raw"><canvas id="chart-alt"></canvas></div>
+                    <div class="flex-1 relative min-h-0 chart-container-err hidden-force"><canvas id="chart-err-alt"></canvas></div>
+                </div>
+            </div>
+            <!-- 统计区 -->
+            <div class="w-44 flex flex-col gap-3 shrink-0 py-1">
+                <div class="stat-card flex-1 border-l-blue-500">
+                    <div class="stat-label text-blue-400">Lat RMSE</div>
+                    <div id="rmse-lat" class="stat-value">--</div>
+                    <div class="stat-unit">deg</div>
+                </div>
+                <div class="stat-card flex-1 border-l-blue-500">
+                    <div class="stat-label text-blue-400">Lon RMSE</div>
+                    <div id="rmse-lon" class="stat-value">--</div>
+                    <div class="stat-unit">deg</div>
+                </div>
+                <div class="stat-card flex-1 border-l-blue-500">
+                    <div class="stat-label text-blue-400">Alt RMSE</div>
+                    <div id="rmse-alt" class="stat-value">--</div>
+                    <div class="stat-unit">m</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 页面: 速度 -->
+        <div id="page-vel" class="page-content absolute top-0 left-0 right-0 bottom-16 flex p-3 gap-3 hidden bg-slate-950">
+            <div class="flex-1 flex flex-col gap-3 min-w-0">
+                <div class="flex-1 chart-box rounded-lg relative flex flex-col p-1">
+                    <div class="absolute top-2 left-2 z-10 chart-title-badge px-2 py-0.5 rounded text-xs text-emerald-400 font-bold title-vn">Velocity North</div>
+                    <div class="flex-1 relative min-h-0 chart-container-raw"><canvas id="chart-vn"></canvas></div>
+                    <div class="flex-1 relative min-h-0 chart-container-err hidden-force"><canvas id="chart-err-vn"></canvas></div>
+                </div>
+                <div class="flex-1 chart-box rounded-lg relative flex flex-col p-1">
+                    <div class="absolute top-2 left-2 z-10 chart-title-badge px-2 py-0.5 rounded text-xs text-emerald-400 font-bold title-ve">Velocity East</div>
+                    <div class="flex-1 relative min-h-0 chart-container-raw"><canvas id="chart-ve"></canvas></div>
+                    <div class="flex-1 relative min-h-0 chart-container-err hidden-force"><canvas id="chart-err-ve"></canvas></div>
+                </div>
+                <div class="flex-1 chart-box rounded-lg relative flex flex-col p-1">
+                    <div class="absolute top-2 left-2 z-10 chart-title-badge px-2 py-0.5 rounded text-xs text-emerald-400 font-bold title-vu">Velocity Up</div>
+                    <div class="flex-1 relative min-h-0 chart-container-raw"><canvas id="chart-vu"></canvas></div>
+                    <div class="flex-1 relative min-h-0 chart-container-err hidden-force"><canvas id="chart-err-vu"></canvas></div>
+                </div>
+            </div>
+            <div class="w-44 flex flex-col gap-3 shrink-0 py-1">
+                <div class="stat-card flex-1 border-l-emerald-500">
+                    <div class="stat-label text-emerald-400">Vn RMSE</div>
+                    <div id="rmse-vn" class="stat-value">--</div>
+                    <div class="stat-unit">m/s</div>
+                </div>
+                <div class="stat-card flex-1 border-l-emerald-500">
+                    <div class="stat-label text-emerald-400">Ve RMSE</div>
+                    <div id="rmse-ve" class="stat-value">--</div>
+                    <div class="stat-unit">m/s</div>
+                </div>
+                <div class="stat-card flex-1 border-l-emerald-500">
+                    <div class="stat-label text-emerald-400">Vu RMSE</div>
+                    <div id="rmse-vu" class="stat-value">--</div>
+                    <div class="stat-unit">m/s</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 页面: 姿态 -->
+        <div id="page-att" class="page-content absolute top-0 left-0 right-0 bottom-16 flex p-3 gap-3 hidden bg-slate-950">
+             <div class="flex-1 flex flex-col gap-3 min-w-0">
+                <div class="flex-1 chart-box rounded-lg relative flex flex-col p-1">
+                    <div class="absolute top-2 left-2 z-10 chart-title-badge px-2 py-0.5 rounded text-xs text-purple-400 font-bold title-roll">Roll Angle</div>
+                    <div class="flex-1 relative min-h-0 chart-container-raw"><canvas id="chart-roll"></canvas></div>
+                    <div class="flex-1 relative min-h-0 chart-container-err hidden-force"><canvas id="chart-err-roll"></canvas></div>
+                </div>
+                <div class="flex-1 chart-box rounded-lg relative flex flex-col p-1">
+                    <div class="absolute top-2 left-2 z-10 chart-title-badge px-2 py-0.5 rounded text-xs text-purple-400 font-bold title-pitch">Pitch Angle</div>
+                    <div class="flex-1 relative min-h-0 chart-container-raw"><canvas id="chart-pitch"></canvas></div>
+                    <div class="flex-1 relative min-h-0 chart-container-err hidden-force"><canvas id="chart-err-pitch"></canvas></div>
+                </div>
+                <div class="flex-1 chart-box rounded-lg relative flex flex-col p-1">
+                    <div class="absolute top-2 left-2 z-10 chart-title-badge px-2 py-0.5 rounded text-xs text-purple-400 font-bold title-yaw">Yaw Angle</div>
+                    <div class="flex-1 relative min-h-0 chart-container-raw"><canvas id="chart-yaw"></canvas></div>
+                    <div class="flex-1 relative min-h-0 chart-container-err hidden-force"><canvas id="chart-err-yaw"></canvas></div>
+                </div>
+            </div>
+            <div class="w-44 flex flex-col gap-3 shrink-0 py-1">
+                <div class="stat-card flex-1 border-l-purple-500">
+                    <div class="stat-label text-purple-400">Roll RMSE</div>
+                    <div id="rmse-roll" class="stat-value">--</div>
+                    <div class="stat-unit">deg</div>
+                </div>
+                <div class="stat-card flex-1 border-l-purple-500">
+                    <div class="stat-label text-purple-400">Pitch RMSE</div>
+                    <div id="rmse-pitch" class="stat-value">--</div>
+                    <div class="stat-unit">deg</div>
+                </div>
+                <div class="stat-card flex-1 border-l-purple-500">
+                    <div class="stat-label text-purple-400">Yaw RMSE</div>
+                    <div id="rmse-yaw" class="stat-value">--</div>
+                    <div class="stat-unit">deg</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 页面: 轨迹 (Leaflet Map) -->
+        <div id="page-traj" class="page-content absolute top-0 left-0 right-0 bottom-16 flex p-3 gap-3 hidden bg-slate-950">
+            <div class="flex-1 chart-box rounded-lg relative overflow-hidden border border-slate-700 shadow-2xl">
+                <div id="map" class="absolute inset-0 z-0 bg-slate-900"></div>
+                <!-- 图例 -->
+                <div class="absolute bottom-6 left-6 bg-slate-900/90 backdrop-blur p-3 rounded-lg border border-slate-700 z-[1000] text-xs shadow-xl">
+                    <div class="flex items-center gap-3 mb-2">
+                        <div class="w-6 h-0.5 bg-orange-500 border-t border-dashed border-white"></div>
+                        <span class="text-orange-400 font-bold">Reference (真值)</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <div class="w-6 h-0.5 bg-blue-500"></div>
+                        <span class="text-blue-400 font-bold">Algorithm (解算)</span>
+                    </div>
+                </div>
+            </div>
+            
+             <div class="w-44 flex flex-col gap-3 shrink-0 py-1">
+                <div class="stat-card flex-1 border-l-orange-500">
+                    <div class="stat-label text-orange-400">North Err RMSE</div>
+                    <div id="rmse-north_m" class="stat-value">--</div>
+                    <div class="stat-unit">m</div>
+                </div>
+                <div class="stat-card flex-1 border-l-orange-500">
+                    <div class="stat-label text-orange-400">East Err RMSE</div>
+                    <div id="rmse-east_m" class="stat-value">--</div>
+                    <div class="stat-unit">m</div>
+                </div>
+                <div class="mt-auto p-4 flex flex-col items-center justify-center opacity-50">
+                    <svg class="w-8 h-8 text-slate-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 7m0 13V7m0 0L9 4"></path></svg>
+                    <span class="text-xs text-slate-500 text-center font-mono">2D MAP VIEW</span>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- 底部控制栏 -->
+    <div class="control-bar fixed bottom-0 left-0 right-0 h-16 flex items-center px-6 gap-6 z-50 bg-slate-900 border-t border-slate-800 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.3)]">
+        <button id="btn-play" onclick="togglePlay()" class="flex items-center justify-center w-10 h-10 rounded-full bg-blue-600 hover:bg-blue-500 text-white transition focus:outline-none shadow-lg shadow-blue-900/40 disabled:opacity-30 disabled:cursor-not-allowed transform active:scale-95" disabled>
+            <svg id="icon-play" class="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4l12 6-12 6z"></path></svg>
+            <svg id="icon-pause" class="w-5 h-5 hidden" fill="currentColor" viewBox="0 0 20 20"><path d="M5 4h3v12H5V4zm7 0h3v12h-3V4z"></path></svg>
+        </button>
+        
+        <button id="btn-replay" onclick="replay()" class="flex items-center justify-center w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 text-slate-300 transition focus:outline-none disabled:opacity-30 disabled:cursor-not-allowed" disabled title="重播">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+        </button>
+
+        <div class="flex-1 flex flex-col justify-center gap-1">
+            <div class="flex justify-between text-[10px] uppercase tracking-wider text-slate-500 font-mono">
+                <span id="time-current">0.00s</span>
+                <span id="time-total">0.00s</span>
+            </div>
+            <input type="range" id="progress-bar" min="0" max="100" value="0" step="0.1" class="w-full appearance-none bg-slate-800 h-1.5 rounded-full outline-none disabled:opacity-50" disabled oninput="handleSeek(this.value)">
+        </div>
+
+        <div class="text-xs text-slate-500 w-32 text-right hidden md:block font-mono">
+            <div id="status-indicator" class="truncate">等待数据...</div>
+        </div>
+    </div>
+
+    <script>
+        // 全局变量
+        let insData = [];   // 解算数据
+        let truthData = []; // 真值数据
+        let errorData = []; // 差分数据 (INS - Truth)
+        
+        let chartInstances = {}; // Chart 实例
+        
+        // Leaflet 变量
+        let map = null;
+        let polylineTruth = null;
+        let polylineOur = null;
+        let markerTruth = null;
+        let markerOur = null;
+        
+        // 播放控制
+        let isPlaying = false;
+        let animationFrameId = null;
+        let startTime = 0;
+        let animationDuration = 5000;
+        let currentProgress = 0;
+
+        // 视图模式: 'raw' (原始) 或 'error' (误差)
+        let viewMode = 'raw'; 
+
+        // 颜色配置
+        const colors = {
+            grid: 'rgba(148, 163, 184, 0.1)',
+            text: '#94a3b8',
+            ins: '#3b82f6',    // 蓝
+            truth: '#f97316',  // 橙
+            error: '#ef4444',  // 红
+            car: '#FACC15'     // 黄
+        };
+
+        const chartKeys = ['lat', 'lon', 'alt', 'vn', 've', 'vu', 'roll', 'pitch', 'yaw'];
+
+        window.onload = function() {
+            initCharts();
+            initMap();
+            window.addEventListener('resize', () => {
+                Object.values(chartInstances).forEach(chart => chart.resize());
+                if(map) map.invalidateSize();
+            });
+            
+            // 自动加载默认文件
+            autoLoadDefaultFiles();
+        };
+
+        // 自动加载逻辑
+        async function autoLoadDefaultFiles() {
+            const statusEl = document.getElementById('auto-load-status');
+            const msgEl = document.getElementById('load-msg');
+            const barEl = document.getElementById('load-progress');
+            const pctEl = document.getElementById('load-percent');
+            const spinner = document.getElementById('load-spinner');
+            
+            statusEl.classList.remove('hidden');
+
+            // 策略1: 优先检查通过 script 标签加载的本地 JS 数据变量
+            if (typeof window.INS_DATA_SOURCE !== 'undefined') {
+                try {
+                    msgEl.innerHTML = '<span class="text-blue-400">检测到本地数据源，正在解析...</span>';
+                    barEl.style.width = '30%';
+                    
+                    if (window.INS_DATA_SOURCE.ins) {
+                        parseDataFile(window.INS_DATA_SOURCE.ins, 'INS');
+                        barEl.style.width = '60%';
+                    }
+                    if (window.INS_DATA_SOURCE.truth) {
+                        parseDataFile(window.INS_DATA_SOURCE.truth, 'TRUTH');
+                        barEl.style.width = '100%';
+                    }
+
+                    spinner.classList.add('hidden');
+                    msgEl.innerHTML = '<span class="text-emerald-400 font-bold">✓</span> 本地数据加载成功！';
+                    barEl.classList.replace('bg-blue-500', 'bg-emerald-500');
+                    pctEl.innerText = '100%';
+                    
+                    setTimeout(() => statusEl.classList.add('opacity-0', 'transition-opacity', 'duration-1000', 'pointer-events-none'), 2000);
+                    return; 
+                } catch (e) {
+                    console.error("JS Data parse error", e);
+                }
+            }
+            
+            // 策略2: Fetch 流程
+            try {
+                if (window.location.protocol !== 'file:') {
+                    msgEl.childNodes[2].textContent = "正在加载 result.txt ...";
+                    const res1 = await fetch('ResultFiles/result.txt');
+                    if (!res1.ok) throw new Error('Result file not found');
+                    const text1 = await res1.text();
+                    
+                    barEl.style.width = '50%';
+                    pctEl.innerText = '50%';
+                    parseDataFile(text1, 'INS');
+                    
+                    msgEl.childNodes[2].textContent = "正在加载 result_ref.txt ...";
+                    const res2 = await fetch('ResultFiles/result_ref.txt');
+                    if (!res2.ok) throw new Error('Ref file not found');
+                    const text2 = await res2.text();
+                    
+                    barEl.style.width = '100%';
+                    pctEl.innerText = '100%';
+                    parseDataFile(text2, 'TRUTH');
+                    
+                    spinner.classList.add('hidden');
+                    msgEl.innerHTML = '<span class="text-emerald-400 font-bold">✓</span> 加载成功！';
+                    barEl.classList.replace('bg-blue-500', 'bg-emerald-500');
+                    
+                    setTimeout(() => statusEl.classList.add('opacity-0', 'transition-opacity', 'duration-1000', 'pointer-events-none'), 2000);
+                    return;
+                }
+            } catch (err) {
+                console.warn("Server-load failed:", err);
+            }
+
+            // 策略3: 失败处理
+            spinner.classList.add('hidden');
+            if (window.location.protocol === 'file:') {
+                msgEl.innerHTML = '<span class="text-amber-400 font-bold">⚠️ 本地模式</span>：请手动上传 result.txt 与 result_ref.txt 文件。';
+                barEl.classList.replace('bg-blue-500', 'bg-amber-500');
+                barEl.style.width = '100%';
+                pctEl.innerText = 'Wait';
+            } else {
+                msgEl.innerHTML = '<span class="text-red-400 font-bold">✕</span> 自动加载失败。请手动上传 result.txt 与 result_ref.txt 文件。';
+                barEl.classList.replace('bg-blue-500', 'bg-red-500');
+            }
+        }
+
+        function initMap() {
+            map = L.map('map', { attributionControl: false, zoomControl: false }).setView([34, 108], 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+            polylineTruth = L.polyline([], {color: '#f97316', dashArray: '6, 8', weight: 3, opacity: 0.8}).addTo(map); 
+            polylineOur = L.polyline([], {color: '#3b82f6', weight: 4, opacity: 0.9}).addTo(map);
+
+            const createCarMarker = () => {
+                return L.marker([0, 0], {
+                    icon: L.divIcon({
+                        className: 'car-icon-container',
+                        html: `<svg width="24" height="48" viewBox="0 0 24 48" style="overflow:visible; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.5));">
+                                <path d="M12 2 L22 12 L12 8 L2 12 Z" fill="#1e293b" stroke="#cbd5e1" stroke-width="1"/>
+                                <rect x="4" y="10" width="16" height="30" rx="4" fill="${colors.car}" stroke="#1e293b" stroke-width="2"/>
+                               </svg>`,
+                        iconSize: [24, 48],
+                        iconAnchor: [12, 24]
+                    })
+                });
+            };
+            markerTruth = createCarMarker().addTo(map);
+            markerOur = createCarMarker().addTo(map);
+        }
+
+        function switchTab(tabId) {
+            document.querySelectorAll('.page-content').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            document.getElementById(`page-${tabId}`).classList.remove('hidden');
+            document.getElementById(`tab-${tabId}`).classList.add('active');
+            
+            if (tabId === 'traj' && map) setTimeout(() => map.invalidateSize(), 100);
+            else setTimeout(() => Object.values(chartInstances).forEach(chart => chart.resize()), 50);
+        }
+
+        // 截图
+        function captureScreenshot() {
+            const activePage = document.querySelector('.page-content:not(.hidden)');
+            if (!activePage) return;
+            const now = new Date();
+            const timestamp = now.toISOString().replace(/[:.]/g, '-');
+            const tabId = activePage.id.replace('page-', '');
+            const fileName = `INS_Pro_${tabId}_${timestamp}.png`;
+
+            html2canvas(activePage, {
+                scale: 2, backgroundColor: '#0f172a', logging: false, useCORS: true, allowTaint: true
+            }).then(canvas => {
+                const link = document.createElement('a');
+                link.download = fileName;
+                link.href = canvas.toDataURL('image/png', 1.0);
+                link.click();
+            }).catch(err => alert("截图失败: " + err));
+        }
+
+        function toggleErrorMode() {
+            if (errorData.length === 0) return alert("请先加载数据 (INS + Ref)");
+            viewMode = (viewMode === 'raw') ? 'error' : 'raw';
+            
+            const btn = document.getElementById('btn-mode-toggle');
+            const text = document.getElementById('mode-text');
+            const dot = btn.querySelector('svg'); 
+            
+            if (viewMode === 'error') {
+                btn.classList.replace('bg-slate-700', 'bg-blue-600');
+                btn.classList.replace('hover:bg-slate-600', 'hover:bg-blue-500');
+                text.innerText = "返回原始 (Raw)";
+            } else {
+                btn.classList.replace('bg-blue-600', 'bg-slate-700');
+                btn.classList.replace('hover:bg-blue-500', 'hover:bg-slate-600');
+                text.innerText = "查看误差 (Diff)";
+            }
+
+            const rawContainers = document.querySelectorAll('.chart-container-raw');
+            const errContainers = document.querySelectorAll('.chart-container-err');
+            
+            if (viewMode === 'error') {
+                rawContainers.forEach(el => el.classList.add('hidden-force'));
+                errContainers.forEach(el => el.classList.remove('hidden-force'));
+                updateTitles(true);
+            } else {
+                rawContainers.forEach(el => el.classList.remove('hidden-force'));
+                errContainers.forEach(el => el.classList.add('hidden-force'));
+                updateTitles(false);
+            }
+            updateChartsToProgress(currentProgress);
+        }
+
+        function updateTitles(isError) {
+            const map = {
+                'lat': ['Latitude [deg]', 'North Error [m]'],
+                'lon': ['Longitude [deg]', 'East Error [m]'],
+                'alt': ['Height [m]', 'Height Error [m]'],
+                'vn':  ['Velocity North [m/s]', 'Vel N Error [m/s]'],
+                've':  ['Velocity East [m/s]', 'Vel E Error [m/s]'],
+                'vu':  ['Velocity Up [m/s]', 'Vel U Error [m/s]'],
+                'roll': ['Roll Angle [deg]', 'Roll Error [deg]'],
+                'pitch': ['Pitch Angle [deg]', 'Pitch Error [deg]'],
+                'yaw':   ['Yaw Angle [deg]', 'Yaw Error [deg]']
+            };
+            chartKeys.forEach(key => {
+                const el = document.querySelector(`.title-${key}`);
+                if(el) el.innerText = isError ? map[key][1] : map[key][0];
+            });
+        }
+
+        function initCharts() {
+            Chart.defaults.font.family = "'Inter', sans-serif";
+            Chart.defaults.color = colors.text;
+            Chart.defaults.borderColor = colors.grid;
+            
+            // 修复：每次调用生成全新的配置对象，避免引用共享导致坐标轴缩放问题
+            const getCommonOpts = () => ({
+                responsive: true, maintainAspectRatio: false, animation: false,
+                interaction: { mode: 'nearest', axis: 'x', intersect: false },
+                plugins: { 
+                    legend: { display: true, labels: { boxWidth: 10, usePointStyle: true } }, 
+                    tooltip: { enabled: true, animation: false, backgroundColor: 'rgba(15, 23, 42, 0.9)', titleColor: '#fff', bodyColor: '#cbd5e1', borderColor: '#334155', borderWidth: 1 } 
+                },
+                scales: {
+                    x: { type: 'linear', display: true, grid: { display: false }, ticks: { color: '#64748b', maxTicksLimit: 6 } },
+                    y: { display: true, grid: { color: 'rgba(148, 163, 184, 0.05)' }, ticks: { color: '#64748b' } }
+                }
+            });
+
+            const createConfig = (isErr) => ({
+                type: 'line',
+                data: { datasets: isErr ? 
+                    [{ label: 'Error', data: [], borderColor: colors.error, borderWidth: 1.5, pointRadius: 0, tension: 0.1 }] : 
+                    [
+                        { label: 'INS', data: [], borderColor: colors.ins, borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+                        { label: 'Ref', data: [], borderColor: colors.truth, borderWidth: 1.5, borderDash: [4, 4], pointRadius: 0, tension: 0.1 }
+                    ] 
+                },
+                options: getCommonOpts() // 确保每个图表有独立的 options
+            });
+
+            chartKeys.forEach((key) => {
+                chartInstances[key] = new Chart(document.getElementById(`chart-${key}`), createConfig(false));
+                chartInstances[`err-${key}`] = new Chart(document.getElementById(`chart-err-${key}`), createConfig(true));
+            });
+        }
+
+        // 数据解析
+        function handleFileUpload(input, type) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => parseDataFile(e.target.result, type);
+            reader.readAsText(file);
+        }
+
+        function parseDataFile(text, type) {
+            const lines = text.trim().split('\n');
+            const data = [];
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line || line.startsWith('#') || line.startsWith('Time')) continue;
+                const cols = line.split(/[\s,]+/); 
+                try {
+                    if (cols.length >= 10) {
+                        data.push({
+                            time: parseFloat(cols[0]),
+                            lat: parseFloat(cols[1]), lon: parseFloat(cols[2]), alt: parseFloat(cols[3]),
+                            vn: parseFloat(cols[4]), ve: parseFloat(cols[5]), vu: parseFloat(cols[6]), 
+                            roll: parseFloat(cols[7]), pitch: parseFloat(cols[8]), yaw: parseFloat(cols[9])
+                        });
+                    }
+                } catch (e) {}
+            }
+            
+            // 降采样
+            const maxPoints = 3000;
+            let finalData = data;
+            if (data.length > maxPoints) {
+                const step = Math.ceil(data.length / maxPoints);
+                finalData = [];
+                for(let k=0; k<data.length; k+=step) finalData.push(data[k]);
+            }
+
+            if (type === 'INS') {
+                insData = finalData;
+                document.getElementById('status-indicator').innerText = `INS: ${insData.length} pts`;
+            } else {
+                truthData = finalData;
+                document.getElementById('status-indicator').innerText += ` | Ref: ${truthData.length} pts`;
+            }
+            checkReady();
+        }
+
+        function generateDemoData() {
+            const data = [], t_data = [];
+            let t=0, lat=34, lon=108, alt=400, vn=0, ve=0, vu=0, r=0, p=0, y=45;
+            const Re = 6378137;
+            for (let i=0; i<1000; i++) {
+                t += 0.05;
+                y += Math.sin(t*0.2)*0.5; p = Math.sin(t*0.3)*3; r = Math.sin(t*0.2)*20;
+                const speed = 120;
+                vn = speed * Math.cos(y*Math.PI/180); ve = speed * Math.sin(y*Math.PI/180); vu = p*3;
+                lat += (vn/Re)*(180/Math.PI)*0.05; lon += (ve/(Re*Math.cos(lat*Math.PI/180)))*(180/Math.PI)*0.05; alt += vu*0.05;
+                
+                // Add noise/drift for INS
+                data.push({
+                    time: parseFloat(t.toFixed(2)),
+                    lat: lat + t*0.000001 + Math.random()*0.00001, lon: lon + t*0.000001 + Math.random()*0.00001, alt: alt + Math.random(),
+                    vn: vn + Math.random(), ve: ve + Math.random(), vu: vu + Math.random(),
+                    roll: r + Math.random(), pitch: p + Math.random(), yaw: y + Math.random()
+                });
+                t_data.push({
+                    time: parseFloat(t.toFixed(2)), lat, lon, alt, vn, ve, vu, roll: r, pitch: p, yaw: y
+                });
+            }
+            insData = data; truthData = t_data;
+            document.getElementById('status-indicator').innerText = "模拟数据已生成";
+            checkReady();
+        }
+
+        function checkReady() {
+            if (insData.length > 0) {
+                if (truthData.length > 0) {
+                    calculateErrors();
+                    document.getElementById('btn-mode-toggle').disabled = false;
+                }
+                document.getElementById('btn-play').disabled = false;
+                document.getElementById('btn-replay').disabled = false;
+                document.getElementById('progress-bar').disabled = false;
+                
+                const start = insData[0].time, end = insData[insData.length-1].time;
+                document.getElementById('time-total').innerText = (end - start).toFixed(1) + 's';
+                
+                calculateAndLockBounds();
+                updateChartsToProgress(0);
+            }
+        }
+
+        function calculateErrors() {
+            errorData = [];
+            const len = Math.min(insData.length, truthData.length);
+            const Re = 6378137, rad = Math.PI / 180;
+            for(let i=0; i<len; i++) {
+                const s = insData[i], t = truthData[i];
+                errorData.push({
+                    time: s.time,
+                    lat: (s.lat - t.lat) * rad * Re, // North Error (m)
+                    lon: (s.lon - t.lon) * rad * Re * Math.cos(t.lat * rad), // East Error (m)
+                    alt: s.alt - t.alt,
+                    vn: s.vn - t.vn, ve: s.ve - t.ve, vu: s.vu - t.vu,
+                    roll: s.roll - t.roll, pitch: s.pitch - t.pitch, yaw: s.yaw - t.yaw
+                });
+            }
+        }
+
+        function calculateAndLockBounds() {
+            let minT = Infinity, maxT = -Infinity;
+            [insData, truthData].forEach(arr => {
+                if(arr.length) { minT = Math.min(minT, arr[0].time); maxT = Math.max(maxT, arr[arr.length-1].time); }
+            });
+
+            const updateScale = (chart, ds, key) => {
+                let min = Infinity, max = -Infinity;
+                if(ds && ds.length) {
+                    ds.forEach(d => { if(d[key]<min) min=d[key]; if(d[key]>max) max=d[key]; });
+                } else { min=0; max=1; }
+                const pad = (max-min)*0.1 || 1.0;
+                chart.options.scales.y.min = min - pad;
+                chart.options.scales.y.max = max + pad;
+                chart.options.scales.x.min = minT;
+                chart.options.scales.x.max = maxT;
+                chart.update('none');
+            };
+
+            chartKeys.forEach(key => {
+                // Raw charts bounds: combine ins & truth
+                let min = Infinity, max = -Infinity;
+                [insData, truthData].forEach(ds => ds.forEach(d => { if(d[key]<min) min=d[key]; if(d[key]>max) max=d[key]; }));
+                if(min===Infinity) { min=0; max=1; }
+                const pad = (max-min)*0.1 || 1.0;
+                chartInstances[key].options.scales.y.min = min-pad;
+                chartInstances[key].options.scales.y.max = max+pad;
+                chartInstances[key].options.scales.x.min = minT;
+                chartInstances[key].options.scales.x.max = maxT;
+                chartInstances[key].update('none');
+
+                // Error charts bounds
+                updateScale(chartInstances[`err-${key}`], errorData, key);
+            });
+
+            // Map bounds - Modified logic: Prefer truth data
+            const mapData = truthData.length > 0 ? truthData : insData; 
+            if (mapData.length) {
+                const pts = mapData.filter((_,i)=>i%10===0).map(d=>[d.lat, d.lon]);
+                if(pts.length) map.fitBounds(pts, {padding:[50,50]});
+            }
+            if(insData.length && polylineOur) polylineOur.setLatLngs(insData.map(d=>[d.lat, d.lon]));
+            if(truthData.length && polylineTruth) polylineTruth.setLatLngs(truthData.map(d=>[d.lat, d.lon]));
+        }
+
+        // 播放控制
+        function togglePlay() { isPlaying ? pauseAnimation() : startAnimation(); }
+        function replay() { pauseAnimation(); currentProgress = 0; startTime = 0; startAnimation(); }
+        function startAnimation() {
+            if (!insData.length) return;
+            isPlaying = true;
+            document.getElementById('icon-play').classList.add('hidden');
+            document.getElementById('icon-pause').classList.remove('hidden');
+            startTime = performance.now() - (currentProgress * animationDuration);
+            loop();
+        }
+        function pauseAnimation() {
+            isPlaying = false;
+            cancelAnimationFrame(animationFrameId);
+            document.getElementById('icon-play').classList.remove('hidden');
+            document.getElementById('icon-pause').classList.add('hidden');
+        }
+        function loop() {
+            if(!isPlaying) return;
+            let p = (performance.now() - startTime) / animationDuration;
+            if(p >= 1) { p=1; pauseAnimation(); }
+            updateChartsToProgress(p);
+            if(isPlaying) animationFrameId = requestAnimationFrame(loop);
+        }
+        function handleSeek(val) {
+            const p = parseFloat(val) / 100;
+            updateChartsToProgress(p);
+            if(isPlaying) startTime = performance.now() - (p * animationDuration);
+        }
+
+        function updateChartsToProgress(p) {
+            currentProgress = p;
+            document.getElementById('progress-bar').value = p * 100;
+            
+            if(!insData.length) return;
+            const idx = Math.min(Math.floor(p * (insData.length-1)), insData.length-1);
+            const t = insData[idx].time;
+            document.getElementById('time-current').innerText = (t - insData[0].time).toFixed(1) + 's';
+
+            // Charts
+            const limit = Math.floor(p * (insData.length-1));
+            const slice = (arr) => arr.slice(0, Math.min(limit, arr.length-1) + 1);
+            
+            if(viewMode==='raw') {
+                const s1 = slice(insData);
+                const s2 = slice(truthData);
+                chartKeys.forEach(k => {
+                    const c = chartInstances[k];
+                    c.data.datasets[0].data = s1.map(d=>({x:d.time, y:d[k]}));
+                    if(s2.length) c.data.datasets[1].data = s2.map(d=>({x:d.time, y:d[k]}));
+                    c.update('none');
+                });
+            } else {
+                const s3 = slice(errorData);
+                chartKeys.forEach(k => {
+                    const c = chartInstances[`err-${k}`];
+                    c.data.datasets[0].data = s3.map(d=>({x:d.time, y:d[k]}));
+                    c.update('none');
+                });
+            }
+
+            // Stats
+            updateStats(limit);
+
+            // Map Markers
+            if(truthData.length) {
+                const pt = truthData[Math.min(idx, truthData.length-1)];
+                if(markerTruth) {
+                    markerTruth.setLatLng([pt.lat, pt.lon]);
+                    const el = markerTruth.getElement().querySelector('svg');
+                    if(el) el.style.transform = `rotate(${pt.yaw}deg)`;
+                }
+            }
+            if(markerOur) {
+                const pt = insData[idx];
+                markerOur.setLatLng([pt.lat, pt.lon]);
+                const el = markerOur.getElement().querySelector('svg');
+                if(el) el.style.transform = `rotate(${pt.yaw}deg)`;
+            }
+        }
+
+        function updateStats(limit) {
+            if(!errorData.length) return;
+            const sub = errorData.slice(0, limit+1);
+            const calcRMSE = (key) => {
+                let sum=0; sub.forEach(d=>sum+=d[key]*d[key]);
+                return Math.sqrt(sum/sub.length);
+            };
+
+            // Map keys to DOM IDs
+            const mapping = {
+                'lat': 'rmse-lat', 'lon': 'rmse-lon', 'alt': 'rmse-alt',
+                'vn': 'rmse-vn', 've': 'rmse-ve', 'vu': 'rmse-vu',
+                'roll': 'rmse-roll', 'pitch': 'rmse-pitch', 'yaw': 'rmse-yaw'
+            };
+
+            for(let k in mapping) {
+                const el = document.getElementById(mapping[k]);
+                if(el) el.innerText = calcRMSE(k).toFixed(3);
+            }
+            
+            // Map page specific
+            const nEl = document.getElementById('rmse-north_m');
+            if(nEl) nEl.innerText = calcRMSE('lat').toFixed(3); // 'lat' in errorData is north error meters
+            const eEl = document.getElementById('rmse-east_m');
+            if(eEl) eEl.innerText = calcRMSE('lon').toFixed(3); // 'lon' in errorData is east error meters
+        }
+    </script>
+</body>
+</html>
